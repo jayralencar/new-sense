@@ -12,6 +12,12 @@ class Search(OpenAISchema):
     query: str = Field(..., description="The query to be searched.")
 
     def __call__(self, **kwargs):
+        if "max_docs_to_return" not in kwargs:
+            kwargs["max_docs_to_return"] = 5
+        
+        if "nsx_search_endpoint" not in kwargs:
+            kwargs["nsx_search_endpoint"] = "https://nsx.ai/api/search"
+
         params = {
             "index": kwargs["index"],
             "query": self.query,
@@ -48,7 +54,7 @@ class Search(OpenAISchema):
         
         text = ""
         for i,doc in enumerate(documents):
-            text += f"Document {i+1}: {doc['paragraphs']}\n"
+            text += f"Document {i+1}: {doc['paragraphs']}\n\n"
         return text
 
 class Agent():
@@ -60,18 +66,19 @@ class Agent():
 
         openai.api_key = os.getenv("OPENAI_API_KEY")
 
-        self.logger = logging.getLogger(__name__)
-        self.logger.setLevel(logging.DEBUG)
+        if "logs_file" in args:
+            self.logger = logging.getLogger(__name__)
+            self.logger.setLevel(logging.DEBUG)
 
-        formatter = logging.Formatter(
-                '{"created_date":"%(asctime)s.%(msecs)03d", "module":"%(name)s", "level":"%(levelname)s", "message":"%(message)s"}',
-                datefmt="%Y-%m-%dT%H:%M:%S"
-        )
+            formatter = logging.Formatter(
+                    '{"created_date":"%(asctime)s.%(msecs)03d", "module":"%(name)s", "level":"%(levelname)s", "message":"%(message)s"}',
+                    datefmt="%Y-%m-%dT%H:%M:%S"
+            )
+                
+            file_handler = logging.FileHandler(args["logs_file"], mode='a+')
+            file_handler.setFormatter(formatter)
             
-        file_handler = logging.FileHandler(args["logs_file"], mode='a+')
-        file_handler.setFormatter(formatter)
-        
-        self.logger.addHandler(file_handler)
+            self.logger.addHandler(file_handler)
 
     @retry(stop_max_attempt_number=3, wait_fixed=2000)
     def call_model(self,messages,functions=None):
@@ -85,11 +92,13 @@ class Agent():
     
     def __call__(self, query):
         instruction = open("./sense/instruction.md","r").read()
+        instruction = instruction.format(edital=self.args["edital"])
         messages = [
             {"role":"system","content":instruction},
             {"role":"user","content":f"Question: {query}"},
         ]
-
+        max_tries = 3
+        try_count = 0
         while True:
             response = self.call_model(messages, functions=[Search.openai_schema])
             finish_reason = response["choices"][0]["finish_reason"]
@@ -104,6 +113,10 @@ class Agent():
                 if function_call:
                     function_response = function_call(**self.args)
                     messages.append({"role":"function","name":function_name,"content":function_response})
+                try_count += 1
+                if try_count >= max_tries:
+                    messages.append({"role":"user","content":"Por favor, forneça uma resposta final."})
+                    
             else:
                 ai_message = dict(response["choices"][0]["message"])
                 messages.append(ai_message)
@@ -123,6 +136,7 @@ if __name__ == "__main__":
     parser.add_argument("--language", type=str, default="pt")
     parser.add_argument("--max_docs_to_return", type=int, default=10)
     parser.add_argument("--logs_file", type=str, default="logs/logs.jsonl")
+    parser.add_argument("--edital", type=str, default="FUNDEP Paraopeba")
 
     args = parser.parse_args()
     agent = Agent(**vars(args))
